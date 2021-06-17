@@ -6,30 +6,27 @@
 /*   By: mondrew <marvin@42.fr>                     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2021/06/14 20:18:45 by mondrew           #+#    #+#             */
-/*   Updated: 2021/06/16 15:42:32 by mondrew          ###   ########.fr       */
+/*   Updated: 2021/06/16 23:09:56 by mondrew          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
 #include <string.h>
+#include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <errno.h>
 
-// How to detect that client has left? -> EOF in 'read' return (0)
-
-// --== do new foo that extracts newLine from msg line and cut msgline
-
-!!!!!! printError("Fatal error\n"); -> after every failed malloc !!!
-typedef struct	s_client {
-
-	int			id;
-	int			socket;
-	char		*msgToClient;
-	char		*msgFromClient;
-	int			deleteMe;
-	s_client	*next;
-
-}				t_client;
+typedef struct		s_client {
+	int				id;
+	int				socket;
+	char			*msgToClient;
+	char			*msgFromClient;
+	int				deleteMe;
+	struct s_client	*next;
+}					t_client;
 
 static int	number_of_clients = 0;
 static const char	*arrivedMsg = "server: client %d just arrived\n";
@@ -40,6 +37,10 @@ char	*ft_strjoin(char *str, char *toAdd)
 {
 	int		i = 0;
 	int		j = 0;
+
+	if (!str)
+		return (ft_strjoin("", toAdd));
+
 	char	*newStr = malloc(sizeof(char) * (strlen(str) + strlen(toAdd) + 1));
 
 	if (newStr == NULL)
@@ -127,7 +128,7 @@ char	*ft_substr(char *str, int start, int length)
 
 	if (newStr == NULL)
 		return (NULL);
-	while (str[j] && length > 0)
+	while (str && str[j] && length > 0)
 	{
 		newStr[i] = str[j];
 		i++;
@@ -138,28 +139,7 @@ char	*ft_substr(char *str, int start, int length)
 	return (newStr);
 }
 
-char	*extractLine(char **str)
-{
-	int		i = findNewLine(*str);
-
-	// Do it from where you call it!!!
-	/*
-	if (i == -1)
-		return (NULL);
-	*/
-	char	*line = ft_substr(*str, 0, i + 1);
-	if (!line)
-		return (NULL);
-
-	char	*newMsg = ft_substr(*str, j + 1, strlen(*str) - strlen(line));
-	if (!newMsg)
-		return (NULL);
-	free(*str);
-	*str = newMsg;
-	return (line);
-}
-
-char	*ft_getMsgWithId(char *str, int id)
+char	*ft_getMsgWithId(const char *str, int id)
 {
 	char	*ret = malloc(sizeof(char) * (strlen(str) + 10 + 1));
 
@@ -179,7 +159,7 @@ void	deleteDisconnectedClients(t_client **clientNode)
 		{
 			t_client	*del = tmp;
 			tmp = tmp->next;
-			deleteClient(del);
+			deleteClient(del, clientNode);
 		}
 		else
 			tmp = tmp->next;
@@ -233,8 +213,7 @@ int		acceptClient(int serverSocket, t_client **clientNode)
 {
 	int					clientSocket;
 	struct sockaddr_in	addr;
-	socketlen_t			len = sizeof(addr); // can delete
-	int					port;
+	socklen_t			len = sizeof(addr);
 	t_client			*newClient;
 
 	if ((clientSocket = accept(serverSocket, (struct sockaddr *)&addr, &len)) == -1)
@@ -275,7 +254,7 @@ int		acceptClient(int serverSocket, t_client **clientNode)
 	return (0);
 }
 
-int		sendMsgToClient(t_client *client, t_client **clientNode)
+int		sendMsgToClient(t_client *client)
 {
 	int i = findNewLine(client->msgToClient);
 
@@ -284,9 +263,12 @@ int		sendMsgToClient(t_client *client, t_client **clientNode)
 	int ret = write(client->socket, client->msgToClient, i + 1);
 	if (ret == -1)
 		return (-1);
-	strcpy(client->msgToClient, client->msgToClient + ret);
-	if (!realloc(client->msgToClient, strlen(client->msgToClient)))
+
+	char	*tmp = ft_substr(client->msgToClient, ret, strlen(client->msgToClient) - ret);
+	if (!tmp)
 		return (-1);
+	free(client->msgToClient);
+	client->msgToClient = tmp;
 	return (0);
 }
 
@@ -295,12 +277,11 @@ int		recvMsgFromClient(t_client *client, t_client **clientNode)
 	char	buf[1024];
 	int		ret;
 
-	// Read new data from the client
+	memset(buf, 0, 1024);
 	if ((ret = read(client->socket, buf, 1023)) == -1)
 		return (-1);
 	else if (ret == 0)
 	{
-		// EOF reached. Client wants to leave the chat
 		char	*leftMsgWithId = ft_getMsgWithId(leftMsg, client->id);
 		if (!leftMsgWithId)
 			return (-1);
@@ -321,7 +302,11 @@ int		recvMsgFromClient(t_client *client, t_client **clientNode)
 		free(client->msgFromClient);
 		client->msgFromClient = newStr;
 	}
+	return (0);
+}
 
+int		resendMessages(t_client *client, t_client **clientNode)
+{
 	// Find all newlines and resend them to others
 	int		i;
 	while ((i = findNewLine(client->msgFromClient)) != -1)
@@ -345,12 +330,15 @@ int		recvMsgFromClient(t_client *client, t_client **clientNode)
 		free(nameMsgWithId);
 		free(rawMsg);
 
-		strcpy(client->msgFromClient, client->msgFromClient + i + 1);
-		if (!realloc(client->msgFromClient, strlen(client->msgFromClient)))
+		char	*tmp = ft_substr(client->msgFromClient, i + 1, strlen(client->msgFromClient) - (i + 1));
+		if (!tmp)
 		{
 			free(message);
 			return (-1);
 		}
+		free(client->msgFromClient);
+		client->msgFromClient = tmp;
+
 		if (sendAll(message, clientNode, NULL) == -1)
 		{
 			free(message);
@@ -411,9 +399,11 @@ int		runMainLoop(int serverSocket)
 			t_client	*tmp = clientNode;
 			while (tmp)
 			{
-				if (tmp->msgToClient != NULL && FD_ISSET(tmp->socket, &wrs))
+				// Important!!!
+				if (tmp->msgToClient != NULL && strlen(tmp->msgToClient) && \
+													FD_ISSET(tmp->socket, &wrs))
 				{
-					if (sendMsgToClient(tmp, &clientNode) == -1)
+					if (sendMsgToClient(tmp) == -1)
 					{
 						freeClients(clientNode);
 						return (-1);
@@ -422,6 +412,11 @@ int		runMainLoop(int serverSocket)
 				else if (FD_ISSET(tmp->socket, &rds))
 				{
 					if (recvMsgFromClient(tmp, &clientNode) == -1)
+					{
+						freeClients(clientNode);
+						return (-1);
+					}
+					if (resendMessages(tmp, &clientNode) == -1)
 					{
 						freeClients(clientNode);
 						return (-1);
@@ -447,11 +442,11 @@ int		startServer(int port)
 
 	// Set serverAddr fields before 'bind'
 	serverAddr.sin_family = AF_INET;
-	addr.sin_port = htons(port);
-	addr.sin_addr.s_addr = htonl(2130706433); // 127.0.0.1
+	serverAddr.sin_port = htons(port);
+	serverAddr.sin_addr.s_addr = htonl(2130706433); // 127.0.0.1
 
 	// Binding the socket 'serverSocket' to IP address
-	if (bind(serverSocket, (struct sockaddr *)&socketAddr, sizeof(addr)) == -1)
+	if (bind(serverSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
 	{
 		close(serverSocket);
 		return (-1);
@@ -470,7 +465,6 @@ int		main(int argc, char **argv)
 {
 	int					serverSocket;
 	int					port;
-	struct sockaddr_in	serverAddr;
 
 	if (argc != 2)
 	{
